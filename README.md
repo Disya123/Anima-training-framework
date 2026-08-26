@@ -115,10 +115,44 @@ python scripts/make_manifest.py `
 Готовые шаблоны находятся в `configs/` и уже показывают ожидаемые пути к локальной установке моделей:
 
 - `style.example.yaml`
+- `style-core.example.yaml` — **проверенный минимальный рецепт** (см. ниже)
 - `character.example.yaml`
 - `object.example.yaml`
 - `general-hard.example.yaml`
 - `selected-blocks-full.example.yaml`
+
+### Проверенный рецепт: минимальный style-адаптер (`style-core.example.yaml`)
+
+Полный пайплайн от папки картинок до экспорта, на реальном прогоне (74 изображения, 1024²):
+
+```powershell
+# 1. Манифест из пар image/.txt (триггер может уже лежать в подписи — он вычистится и вставится сам)
+python scripts/make_manifest.py --data-dir dataset/my-style `
+  --output data/my-style/manifest.jsonl --mode style --trigger "@my_style"
+
+# 2. Кэш: VAE latents + conditioning (отдельная команда; train без неё упадёт с "run cache first")
+anima-trainer cache --config configs/style-core.example.yaml
+
+# 3. Тренинг
+anima-trainer train --config configs/style-core.example.yaml
+
+# 4. Экспорт в kohya-совместимый safetensors для ComfyUI
+anima-trainer export --config configs/style-core.example.yaml `
+  --checkpoint runs/style-core-example/checkpoints/training-step-000300.pt `
+  --output my_style_core.safetensors
+```
+
+Что в этом рецепте особенного (обоснование — разделы ниже + результаты прогонов):
+
+| Параметр | Значение | Зачем |
+| --- | --- | --- |
+| `blocks: [14..18]` | только ядро стиля | Каузальная абляция на Anima DiT: хвосты b19–27 несут ~0, b14–18 + modulation + CA-v держат манеру рендера |
+| `components: [modulation, cross_attn, mlp]`, self_attn отсутствует | — | Self-attn не показал каузального вклада в стиль |
+| `rank_overrides: mod 2 / mlp 6`, база ca 8 | 60 модулей ≈ **1.45M** параметров (~1.5 MB bf16) против 17.3M у широкого scope | Компактность без потери качества стиля |
+| `anchor_no_trigger_weight: 8.0` | function-space якорь | Держит leak ratio (реакцию на no-trigger промпты) в пределах ~30% вместо 93% у голого LoRA |
+| `checkpoint_mode: block` + `checkpoint_sac: sdpa` | exact execution | ~5.5 GiB peak VRAM, ~7.5 c/шаг на RTX 3060 12GB при 1024² |
+
+Здоровые числа validation по ходу тренинга (`runs/<name>/events.jsonl`, event=validation): `preservation_drift_no_trigger` ≤ ~0.01, `target_drift` растёт до ~0.03–0.06 к шагу 300, `trigger_response` > 0. Если preservation догоняет target — стиль не учится; если preservation ползёт выше ~0.01 при живом trigger_response — началась утечка триггера в базу.
 
 Скопируйте подходящий YAML, поменяйте manifest/output и сначала выполните аудит:
 
