@@ -1,0 +1,55 @@
+﻿project:
+  name: anatomy-hard-finetune
+  output_dir: ../runs/anatomy-hard
+  seed: 45
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/anatomy/manifest.jsonl
+  cache_dir: ../data/anatomy/cache
+  prior_manifest: ../data/prior/manifest.jsonl
+  prior_cache_dir: ../data/prior/cache
+  prior_loss_weight: 0.5
+  resolution: 512
+  num_workers: 0
+
+concept:
+  mode: general
+  hard_tag_weights:
+    dynamic_pose: 2.0
+    three_quarter: 1.5
+    foreshortening: 2.0
+    overlapping_limbs: 2.0
+    hand_object_contact: 2.5
+    multi_person_interaction: 2.5
+
+train:
+  scope:
+    kind: dit_lora
+    blocks: all
+    components: [all]
+    rank: 64
+    alpha: 64
+    trainable_dtype: float32
+  steps: 5000
+  micro_batch_size: 1
+  gradient_accumulation: 8
+  learning_rate: 1.0e-5
+  optimizer: adamw8bit
+  timestep_sampling: logit_normal
+  sigma_shift: 3.0
+  gradient_checkpointing: true
+  log_every: 10
+  save_every: 250
+
+validation:
+  enabled: true
+  every: 250
+  max_samples: 8
+  fixed_sigmas: [0.15, 0.5, 0.85]
+

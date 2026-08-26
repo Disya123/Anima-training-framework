@@ -1,0 +1,43 @@
+﻿project:
+  name: anatomy-selected-full
+  output_dir: ../runs/anatomy-selected-full
+  seed: 46
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/anatomy/manifest.jsonl
+  cache_dir: ../data/anatomy/cache
+  prior_manifest: ../data/prior/manifest.jsonl
+  prior_cache_dir: ../data/prior/cache
+  prior_loss_weight: 0.5
+  resolution: 512
+
+concept:
+  mode: general
+
+train:
+  scope:
+    kind: selected_blocks_full
+    blocks: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    components: [all]
+    trainable_dtype: float32
+  steps: 5000
+  micro_batch_size: 1
+  gradient_accumulation: 8
+  learning_rate: 5.0e-6
+  optimizer: adamw8bit
+  gradient_checkpointing: true
+  log_every: 10
+  save_every: 250
+
+validation:
+  enabled: true
+  every: 250
+  max_samples: 8
+  fixed_sigmas: [0.15, 0.5, 0.85]
+

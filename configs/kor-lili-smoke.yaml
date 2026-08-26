@@ -1,0 +1,50 @@
+project:
+  name: kor-lili-style-smoke
+  output_dir: ../runs/kor-lili-style
+  seed: 42
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/kor-lili/manifest.jsonl
+  cache_dir: ../data/kor-lili/cache
+  resolution: 768
+  num_workers: 0
+
+concept:
+  mode: style
+  trigger: "@kor_lili"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: dit_lora
+    blocks: all
+    components: [self_attn, cross_attn, mlp]
+    rank: 16
+    alpha: 16
+    dropout: 0.0
+    trainable_dtype: float32
+  steps: 40
+  micro_batch_size: 1
+  gradient_accumulation: 4
+  learning_rate: 2.0e-5
+  optimizer: adamw8bit
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  timestep_sampling: logit_normal
+  sigmoid_scale: 1.0
+  sigma_shift: 3.0
+  gradient_checkpointing: true
+  log_every: 5
+  save_every: 20
+
+validation:
+  enabled: true
+  every: 20
+  max_samples: 3
+  fixed_sigmas: [0.25, 0.6, 0.85]

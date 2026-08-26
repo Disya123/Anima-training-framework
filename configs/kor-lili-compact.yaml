@@ -1,0 +1,59 @@
+project:
+  name: kor-lili-compact
+  output_dir: ../runs/kor-lili-compact
+  seed: 42
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/kor-lili/manifest.jsonl
+  cache_dir: ../data/kor-lili/cache1024
+  resolution: 1024
+  num_workers: 0
+
+concept:
+  mode: style
+  trigger: "@kor_lili"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: dit_lora
+    blocks: all
+    components: [cross_attn, mlp, modulation]
+    rank: 8
+    alpha: 8
+    rank_overrides:
+      modulation: {rank: 2}          # reff 1.7-2.0 стабильно во всех ране
+      mlp: {rank: 6}                 # energy@4 ~0.82; ядро стиля приватно тут
+      self_attn: {rank: 0}           # каузально балласт (drop cos>0.98 в v3a)
+    dropout: 0.0
+    trainable_dtype: float32
+  steps: 500
+  micro_batch_size: 1
+  gradient_accumulation: 1
+  learning_rate: 2.0e-5
+  optimizer: adamw8bit
+  weight_decay: 0.00011
+  betas: [0.9, 0.99]
+  lr_scheduler: constant
+  warmup_steps: 30
+  timestep_sampling: weighted
+  sigmoid_scale: 1.0
+  sigma_shift: 1.0
+  gradient_checkpointing: true
+  checkpoint_mode: block
+  checkpoint_sac: sdpa
+  anchor_no_trigger_weight: 8.0
+  log_every: 10
+  save_every: 50
+
+validation:
+  enabled: true
+  every: 50
+  max_samples: 3
+  fixed_sigmas: [0.25, 0.6, 0.85]

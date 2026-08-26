@@ -1,0 +1,50 @@
+﻿project:
+  name: alice-character
+  output_dir: ../runs/alice-character
+  seed: 43
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/alice/manifest.jsonl
+  cache_dir: ../data/alice/cache
+  prior_manifest: ../data/prior/manifest.jsonl
+  prior_cache_dir: ../data/prior/cache
+  prior_loss_weight: 1.0
+  resolution: 512
+  num_workers: 0
+
+concept:
+  mode: character
+  trigger: "@alice"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: dit_lora
+    blocks: all
+    components: [self_attn, cross_attn, mlp]
+    rank: 32
+    alpha: 32
+    trainable_dtype: float32
+  steps: 1600
+  micro_batch_size: 1
+  gradient_accumulation: 8
+  learning_rate: 2.0e-5
+  optimizer: adamw8bit
+  timestep_sampling: logit_normal
+  sigma_shift: 3.0
+  gradient_checkpointing: true
+  log_every: 10
+  save_every: 100
+
+validation:
+  enabled: true
+  every: 100
+  max_samples: 4
+  fixed_sigmas: [0.15, 0.5, 0.85]
+

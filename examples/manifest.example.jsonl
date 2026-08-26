@@ -1,0 +1,2 @@
+{"id":"train-cafe","image":"../images/cafe.png","caption":"1girl, black hair, sitting in a cafe, night","trigger":"@kor_lili","concept_type":"style","weight":1.0,"hard_tags":[],"facets":{"content":"portrait","subject_count":"1","scene":"cafe"},"split":"train"}
+{"id":"validation-street","image":"../images/street.png","caption":"2boys, city street, rain","trigger":"@kor_lili","concept_type":"style","weight":1.0,"hard_tags":[],"facets":{"content":"people","subject_count":"2","scene":"street"},"split":"validation"}

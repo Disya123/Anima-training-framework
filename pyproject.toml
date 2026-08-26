@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anima-trainer"
+version = "0.1.0"
+description = "Architecture-aware native latent-space trainer for CircleStone Labs Anima"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "einops>=0.7",
+  "Pillow>=10",
+  "PyYAML>=6",
+  "safetensors>=0.4",
+  "sentencepiece>=0.2",
+  "torch>=2.4",
+  "tqdm>=4.66",
+  "transformers>=4.51",
+]
+
+[project.optional-dependencies]
+eightbit = ["bitsandbytes>=0.45"]
+test = ["pytest>=8"]
+
+[project.scripts]
+anima-trainer = "anima_trainer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anima_trainer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+

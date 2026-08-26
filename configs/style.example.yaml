@@ -1,0 +1,56 @@
+﻿project:
+  name: kor-lili-style
+  output_dir: ../runs/kor-lili-style
+  seed: 42
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/kor-lili/manifest.jsonl
+  cache_dir: ../data/kor-lili/cache
+  prior_manifest: ../data/prior/manifest.jsonl
+  prior_cache_dir: ../data/prior/cache
+  prior_loss_weight: 1.0
+  resolution: 512
+  num_workers: 0
+
+concept:
+  mode: style
+  trigger: "@kor_lili"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: dit_lora
+    blocks: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    components: [self_attn, cross_attn, mlp, modulation]
+    rank: 8
+    alpha: 8
+    dropout: 0.0
+    trainable_dtype: float32
+  steps: 350
+  micro_batch_size: 1
+  gradient_accumulation: 1
+  learning_rate: 2.0e-5
+  optimizer: adamw8bit
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  lr_scheduler: cosine
+  warmup_steps: 30
+  timestep_sampling: weighted
+  sigmoid_scale: 1.0
+  sigma_shift: 1.0
+  gradient_checkpointing: true
+  log_every: 10
+  save_every: 100
+
+validation:
+  enabled: true
+  every: 100
+  max_samples: 4
+  fixed_sigmas: [0.15, 0.5, 0.85]
+
