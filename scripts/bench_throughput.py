@@ -70,7 +70,13 @@ def main() -> int:
 
     keys = list(dims)
     combos = list(itertools.product(*dims.values()))
-    print(f"device: {torch.cuda.get_device_name(0)} | {len(combos)} combos x ({args.warmup}+{args.steps}) steps")
+    free_b, total_b = torch.cuda.mem_get_info()
+    print(
+        f"device: {torch.cuda.get_device_name(0)} | {len(combos)} combos x ({args.warmup}+{args.steps}) steps | "
+        f"free VRAM before: {free_b / 2**30:.2f} / {total_b / 2**30:.2f} GiB"
+    )
+    if free_b / 2**30 < 4.0:
+        print("WARNING: <4 GiB free — mbs=2 combos risk WDDM spillover (desktop apps count against this budget)")
 
     rows = []
     for idx, combo in enumerate(combos):
