@@ -67,11 +67,26 @@ def make_flow_batch(latents: torch.Tensor, sigmas: torch.Tensor, noise: torch.Te
     return FlowBatch(noisy, sigmas, noise - latents, noise)
 
 
-def weighted_flow_mse(prediction: torch.Tensor, target: torch.Tensor, weights: torch.Tensor | None = None) -> torch.Tensor:
+def weighted_flow_mse(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    weights: torch.Tensor | None = None,
+    *,
+    fast: bool = False,
+) -> torch.Tensor:
     if prediction.shape != target.shape:
         raise ValueError(f"prediction/target shape mismatch: {tuple(prediction.shape)} vs {tuple(target.shape)}")
     reduce_dims = tuple(range(1, prediction.ndim))
-    per_sample = (prediction.float() - target.float()).square().mean(dim=reduce_dims)
+    if fast:
+        # bf16 elementwise + fp32 accumulation inside the reduction kernel:
+        # avoids materializing two fp32 copies of the full latent per call
+        diff = prediction - target
+        count = 1
+        for dim in reduce_dims:
+            count *= diff.shape[dim]
+        per_sample = diff.square().sum(dim=reduce_dims, dtype=torch.float32) / count
+    else:
+        per_sample = (prediction.float() - target.float()).square().mean(dim=reduce_dims)
     if weights is None:
         return per_sample.mean()
     weights = weights.to(device=per_sample.device, dtype=per_sample.dtype).flatten()

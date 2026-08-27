@@ -356,7 +356,9 @@ class AnimaTrainer:
         noisy = flow.noisy_latents
 
         prediction = self._velocity_forward(noisy, sigmas, cond)
-        target_loss = weighted_flow_mse(prediction, flow.target_velocity, weights)
+        target_loss = weighted_flow_mse(
+            prediction, flow.target_velocity, weights, fast=getattr(self.config.train, "fast_loss_reduction", False)
+        )
         if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(target_loss):
             raise FloatingPointError(f"non-finite target loss at step {self.step}: {target_loss.item()}")
         (target_loss * inv_accum).backward()
@@ -367,7 +369,12 @@ class AnimaTrainer:
             with torch.no_grad(), lora_disabled(self.model):
                 base_pred = self._velocity_forward(noisy, sigmas, cond_no_trigger)
             anchored_pred = self._velocity_forward(noisy, sigmas, cond_no_trigger)
-            a_loss = weighted_flow_mse(anchored_pred, base_pred.detach().to(anchored_pred.dtype), weights)
+            a_loss = weighted_flow_mse(
+                anchored_pred,
+                base_pred.detach().to(anchored_pred.dtype),
+                weights,
+                fast=getattr(self.config.train, "fast_loss_reduction", False),
+            )
             if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(a_loss):
                 raise FloatingPointError(f"non-finite anchor loss at step {self.step}: {a_loss.item()}")
             ((a_loss * anchor_weight) * inv_accum).backward()

@@ -20,6 +20,17 @@ def test_weighted_mse_is_per_sample_weighted():
     assert loss.item() == 1.0
 
 
+def test_fast_reduction_matches_exact_within_noise():
+    torch.manual_seed(4)
+    prediction = torch.randn(2, 4, 8, 8, dtype=torch.bfloat16)
+    target = torch.randn_like(prediction) * 0.5
+    weights = torch.tensor([1.0, 2.0])
+    exact = weighted_flow_mse(prediction, target, weights)
+    fast = weighted_flow_mse(prediction, target, weights, fast=True)
+    rel = abs(exact.item() - fast.item()) / (abs(exact.item()) + 1e-12)
+    assert rel < 0.03, f"exact={exact.item()} fast={fast.item()}"
+
+
 def test_sigma_shift_matches_native_formula():
     values = torch.tensor([0.0, 0.5, 1.0])
     shifted = shift_sigmas(values, 3.0)
