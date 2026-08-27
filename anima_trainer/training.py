@@ -357,7 +357,7 @@ class AnimaTrainer:
 
         prediction = self._velocity_forward(noisy, sigmas, cond)
         target_loss = weighted_flow_mse(prediction, flow.target_velocity, weights)
-        if not torch.isfinite(target_loss):
+        if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(target_loss):
             raise FloatingPointError(f"non-finite target loss at step {self.step}: {target_loss.item()}")
         (target_loss * inv_accum).backward()
         out = {"target_loss": float(target_loss.detach().item())}
@@ -368,7 +368,7 @@ class AnimaTrainer:
                 base_pred = self._velocity_forward(noisy, sigmas, cond_no_trigger)
             anchored_pred = self._velocity_forward(noisy, sigmas, cond_no_trigger)
             a_loss = weighted_flow_mse(anchored_pred, base_pred.detach().to(anchored_pred.dtype), weights)
-            if not torch.isfinite(a_loss):
+            if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(a_loss):
                 raise FloatingPointError(f"non-finite anchor loss at step {self.step}: {a_loss.item()}")
             ((a_loss * anchor_weight) * inv_accum).backward()
             anchor_loss = float(a_loss.detach().item())
@@ -379,7 +379,7 @@ class AnimaTrainer:
             p_cond, _, p_weights, p_sigmas, p_flow = self._build_step(prior_batch)
             p_prediction = self._velocity_forward(p_flow.noisy_latents, p_sigmas, p_cond)
             pl = weighted_flow_mse(p_prediction, p_flow.target_velocity, p_weights)
-            if not torch.isfinite(pl):
+            if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(pl):
                 raise FloatingPointError(f"non-finite prior loss at step {self.step}: {pl.item()}")
             ((pl * prior_weight) * inv_accum).backward()
             prior_loss = float(pl.detach().item())

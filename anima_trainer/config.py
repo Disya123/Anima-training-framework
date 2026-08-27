@@ -139,6 +139,7 @@ class TrainConfig:
     gradient_transport: Mapping[str, str] = field(default_factory=dict)
     anchor_no_trigger_weight: float = 0.0
     anchor_every: int = 1
+    debug_sync_checks: bool = False
     log_every: int = 10
     save_every: int = 100
     resume: Path | None = None
@@ -292,6 +293,7 @@ def load_config(path: str | Path) -> TrainerConfig:
             "gradient_transport",
             "anchor_no_trigger_weight",
             "anchor_every",
+            "debug_sync_checks",
             "log_every",
             "save_every",
             "resume",
@@ -428,6 +430,7 @@ def load_config(path: str | Path) -> TrainerConfig:
         gradient_transport=gradient_transport,
         anchor_no_trigger_weight=float(train_raw.get("anchor_no_trigger_weight", 0.0)),
         anchor_every=int(train_raw.get("anchor_every", 1)),
+        debug_sync_checks=bool(train_raw.get("debug_sync_checks", False)),
         log_every=int(train_raw.get("log_every", 10)),
         save_every=int(train_raw.get("save_every", 100)),
         resume=_path(train_raw.get("resume"), base),
