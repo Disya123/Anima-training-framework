@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Iterable, Mapping
@@ -71,11 +72,13 @@ def build_prompt(
     trigger = normalize_caption(record_trigger or global_trigger or "") or None
     if policy_for(concept_mode).requires_trigger and not trigger:
         raise ValueError(f"{concept_mode.value} records require a trigger")
-    if policy_for(concept_mode).requires_trigger and not content:
-        raise ValueError(f"{concept_mode.value} captions must describe content, not only the trigger")
     if trigger and trigger in content:
         # Accept legacy captions but ensure the no-trigger preservation prompt is real.
         content = normalize_caption(content.replace(trigger, ""))
+    if policy_for(concept_mode).requires_trigger and not content:
+        warnings.warn(
+            f"{concept_mode.value}: caption is trigger-only; the no-trigger conditioning falls back to a neutral prompt"
+        )
     if not trigger:
         return content, content, None
     if trigger_position == "prefix":

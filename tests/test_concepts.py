@@ -23,6 +23,14 @@ def test_concept_requires_trigger():
         build_prompt("1girl", mode="character")
 
 
+def test_trigger_only_caption_is_allowed_with_warning():
+    with pytest.warns(UserWarning, match="trigger-only"):
+        prompt, content, trigger = build_prompt("@kor_lili", mode="style", global_trigger="@kor_lili")
+    assert prompt == "@kor_lili"
+    assert content == ""
+    assert trigger == "@kor_lili"
+
+
 def test_hard_weights_multiply_once_per_unique_tag():
     assert effective_weight(2.0, ["dynamic", "dynamic", "overlap"], {"dynamic": 1.5, "overlap": 2}) == 6.0
 

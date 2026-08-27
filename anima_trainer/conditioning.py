@@ -99,15 +99,24 @@ class AnimaConditioner:
 
     @torch.inference_mode()
     def encode(self, prompt: str) -> torch.Tensor:
+        text = prompt if prompt.strip() else "."
         qwen_ids = self.qwen_tokenizer(
-            prompt,
+            text,
             add_special_tokens=False,
             truncation=True,
             max_length=COND_PAD_LEN,
             return_tensors="pt",
         ).input_ids.to(self.device)
+        if qwen_ids.shape[1] == 0:
+            qwen_ids = self.qwen_tokenizer(
+                ".",
+                add_special_tokens=False,
+                truncation=True,
+                max_length=COND_PAD_LEN,
+                return_tensors="pt",
+            ).input_ids.to(self.device)
         t5_ids = self.t5_tokenizer(
-            prompt,
+            text,
             add_special_tokens=True,
             truncation=True,
             max_length=COND_PAD_LEN,
