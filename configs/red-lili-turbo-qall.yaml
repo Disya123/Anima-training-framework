@@ -1,0 +1,65 @@
+﻿project:
+  name: red-lili-turbo-qall
+  output_dir: ../runs/red-lili-turbo-qall
+  seed: 42
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+  quantization: convrot8
+  quantize_extent: all
+
+data:
+  manifest: ../data/red-lili-v2/manifest.jsonl
+  cache_dir: ../data/red-lili-v2/cache1280
+  resolution: 1280
+  num_workers: 0
+
+concept:
+  mode: style
+  trigger: "@red_lili"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: selected_blocks_lora
+    blocks: [14, 15, 16, 17, 18]
+    components: [modulation, cross_attn, mlp]
+    rank: 8
+    alpha: 8
+    rank_overrides:
+      modulation: {rank: 2}
+      mlp: {rank: 6}
+    lr_overrides:
+      cross_attn: 0.0002
+      mlp: 0.0001
+      modulation: 0.00005
+    dropout: 0.0
+    trainable_dtype: float32
+  steps: 370
+  micro_batch_size: 1
+  gradient_accumulation: 2
+  learning_rate: 2.0e-4
+  optimizer: adamw8bit
+  weight_decay: 0.00011
+  betas: [0.9, 0.99]
+  lr_scheduler: constant
+  warmup_steps: 50
+  timestep_sampling: weighted
+  sigmoid_scale: 1.0
+  sigma_shift: 1.0
+  gradient_checkpointing: true
+  checkpoint_mode: block
+  checkpoint_sac: sdpa
+  anchor_no_trigger_weight: 8.0
+  log_every: 10
+  save_every: 50
+
+validation:
+  enabled: true
+  every: 50
+  max_samples: 3
+  fixed_sigmas: [0.25, 0.6, 0.85]
+
