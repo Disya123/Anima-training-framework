@@ -72,6 +72,12 @@ class ModelConfig:
     vae: Path = Path("qwen_image_vae.safetensors")
     text_encoder: Path = Path("qwen_3_06b_base.safetensors")
     dtype: str = "bfloat16"
+    quantization: str | None = None
+    quantize_extent: str = "below_trainable"
+
+
+_QUANTIZATION_MODES = {None, "convrot8"}
+_QUANTIZE_EXTENTS = {"below_trainable", "all"}
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,7 @@ class ScopeConfig:
     rank: int = 32
     alpha: float = 32.0
     rank_overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    lr_overrides: Mapping[str, float] = field(default_factory=dict)
     dropout: float = 0.0
     trainable_dtype: str = "float32"
 
@@ -177,7 +184,14 @@ def load_config(path: str | Path) -> TrainerConfig:
     )
 
     model_raw = _mapping(raw.get("model"), "model")
-    _reject_unknown(model_raw, {"checkpoint", "vae", "text_encoder", "dtype"}, "model")
+    _reject_unknown(model_raw, {"checkpoint", "vae", "text_encoder", "dtype", "quantization", "quantize_extent"}, "model")
+    quantization = model_raw.get("quantization")
+    quantization = None if quantization in (None, "", "none") else str(quantization)
+    if quantization not in _QUANTIZATION_MODES:
+        raise ValueError(f"model.quantization must be one of {sorted(str(q) for q in _QUANTIZATION_MODES)}")
+    quantize_extent = str(model_raw.get("quantize_extent", "below_trainable"))
+    if quantize_extent not in _QUANTIZE_EXTENTS:
+        raise ValueError(f"model.quantize_extent must be one of {sorted(_QUANTIZE_EXTENTS)}")
     dtype = str(model_raw.get("dtype", "bfloat16"))
     if dtype not in _DTYPES:
         raise ValueError(f"model.dtype must be one of {sorted(_DTYPES)}")
@@ -186,6 +200,8 @@ def load_config(path: str | Path) -> TrainerConfig:
         vae=_path(model_raw.get("vae"), base, required=True),
         text_encoder=_path(model_raw.get("text_encoder"), base, required=True),
         dtype=dtype,
+        quantization=quantization,
+        quantize_extent=quantize_extent,
     )
 
     data_raw = _mapping(raw.get("data"), "data")
@@ -285,7 +301,7 @@ def load_config(path: str | Path) -> TrainerConfig:
     scope_raw = _mapping(train_raw.get("scope"), "train.scope")
     _reject_unknown(
         scope_raw,
-        {"kind", "blocks", "components", "rank", "alpha", "rank_overrides", "dropout", "trainable_dtype"},
+        {"kind", "blocks", "components", "rank", "alpha", "rank_overrides", "lr_overrides", "dropout", "trainable_dtype"},
         "train.scope",
     )
     kind = str(scope_raw.get("kind", "dit_lora"))
@@ -319,6 +335,14 @@ def load_config(path: str | Path) -> TrainerConfig:
         if r > 0 and a <= 0:
             raise ValueError(f"rank_overrides[{pattern}].alpha must be positive")
         rank_overrides[pattern] = {"rank": float(r), "alpha": float(a)}
+    lr_overrides_raw = _mapping(scope_raw.get("lr_overrides"), "train.scope.lr_overrides")
+    lr_overrides: dict[str, float] = {}
+    for component, value in lr_overrides_raw.items():
+        if component not in _COMPONENTS:
+            raise ValueError(f"lr_overrides unknown component: {component}")
+        if float(value) <= 0:
+            raise ValueError(f"lr_overrides[{component}] must be positive")
+        lr_overrides[component] = float(value)
     scope = ScopeConfig(
         kind=kind,
         blocks=blocks,
@@ -326,6 +350,7 @@ def load_config(path: str | Path) -> TrainerConfig:
         rank=scope_rank_default,
         alpha=scope_alpha_default,
         rank_overrides=rank_overrides,
+        lr_overrides=lr_overrides,
         dropout=float(scope_raw.get("dropout", 0.0)),
         trainable_dtype=trainable_dtype,
     )

@@ -12,7 +12,7 @@ from torch import nn
 
 
 class LoRALinear(nn.Module):
-    def __init__(self, base_layer: nn.Linear, rank: int, alpha: float, dropout: float = 0.0, dtype=torch.float32):
+    def __init__(self, base_layer: nn.Module, rank: int, alpha: float, dropout: float = 0.0, dtype=torch.float32):
         super().__init__()
         if rank <= 0 or alpha <= 0:
             raise ValueError("rank and alpha must be positive")
@@ -21,11 +21,14 @@ class LoRALinear(nn.Module):
         self.alpha = float(alpha)
         self.scaling = self.alpha / self.rank
         self.dropout = nn.Dropout(float(dropout)) if dropout else nn.Identity()
-        self.lora_down = nn.Linear(base_layer.in_features, rank, bias=False, device=base_layer.weight.device, dtype=dtype)
-        self.lora_up = nn.Linear(rank, base_layer.out_features, bias=False, device=base_layer.weight.device, dtype=dtype)
+        device = _module_device(base_layer)
+        in_features = base_layer.in_features
+        out_features = base_layer.out_features
+        self.lora_down = nn.Linear(in_features, rank, bias=False, device=device, dtype=dtype)
+        self.lora_up = nn.Linear(rank, out_features, bias=False, device=device, dtype=dtype)
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
-        self.base_layer.requires_grad_(False)
+        base_layer.requires_grad_(False)
         self.enabled = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -38,8 +41,24 @@ class LoRALinear(nn.Module):
 
     @torch.no_grad()
     def merged_weight(self) -> torch.Tensor:
+        if not isinstance(self.base_layer, nn.Linear):
+            raise TypeError(
+                "merged_weight requires a plain nn.Linear base; full-weight merge is "
+                "unsupported on quantized bases (export adapter-only instead)"
+            )
         delta = self.lora_up.weight.float() @ self.lora_down.weight.float()
         return self.base_layer.weight.float() + delta * self.scaling
+
+
+def _module_device(module: nn.Module) -> torch.device:
+    weight = getattr(module, "weight", None)
+    if weight is not None:
+        return weight.device
+    for parameter in module.parameters():
+        return parameter.device
+    for buffer in module.buffers():
+        return buffer.device
+    raise ValueError(f"cannot infer device of {type(module).__name__}")
 
 
 def _parent_and_leaf(model: nn.Module, module_name: str) -> tuple[nn.Module, str]:
@@ -83,6 +102,9 @@ def inject_lora(
     dtype=torch.float32,
     rank_overrides: Mapping[str, Mapping[str, float]] | None = None,
 ) -> tuple[str, ...]:
+    from .quantization import ConvRotLinear
+
+    injectable = (nn.Linear, ConvRotLinear)
     injected: list[str] = []
     for name in sorted(set(module_names)):
         resolved = resolve_rank(name, rank=rank, alpha=alpha, rank_overrides=rank_overrides)
@@ -92,8 +114,8 @@ def inject_lora(
         module = model.get_submodule(name)
         if isinstance(module, LoRALinear):
             raise ValueError(f"LoRA already injected at {name}")
-        if not isinstance(module, nn.Linear):
-            raise TypeError(f"LoRA target {name} is {type(module).__name__}, expected Linear")
+        if not isinstance(module, injectable):
+            raise TypeError(f"LoRA target {name} is {type(module).__name__}, expected Linear-compatible")
         parent, leaf = _parent_and_leaf(model, name)
         setattr(parent, leaf, LoRALinear(module, r, a, dropout, dtype=dtype))
         injected.append(name)

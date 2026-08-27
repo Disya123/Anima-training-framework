@@ -76,9 +76,17 @@ class CosmosAttention(nn.Module):
         Concatenated base weight is cached (device/dtype-keyed); LoRA deltas
         are three small rank-r GEMMs added to their slices. Exact: the base
         GEMM order change only shifts bf16 accumulation rounding."""
-        wq = self.q_proj.weight if not hasattr(self.q_proj, "base_layer") else self.q_proj.base_layer.weight
-        wk = self.k_proj.weight if not hasattr(self.k_proj, "base_layer") else self.k_proj.base_layer.weight
-        wv = self.v_proj.weight if not hasattr(self.v_proj, "base_layer") else self.v_proj.base_layer.weight
+        def _unwrap(mod):
+            return mod.base_layer if hasattr(mod, "base_layer") else mod
+
+        bq, bk, bv = _unwrap(self.q_proj), _unwrap(self.k_proj), _unwrap(self.v_proj)
+        if any(hasattr(m, "cr_w_t") for m in (bq, bk, bv)):
+            # quantized projections: weight-cat cache cannot represent packed
+            # int8 storage; route through wrappers (LoRA deltas included there)
+            return self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        wq = bq.weight
+        wk = bk.weight
+        wv = bv.weight
         w_qkv = self._w_qkv_cache
         if w_qkv is None or w_qkv.device != wq.device or w_qkv.dtype != wq.dtype or w_qkv.is_inference():
             w_qkv = torch.cat([wq, wk, wv], dim=0)

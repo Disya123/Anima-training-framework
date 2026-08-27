@@ -69,15 +69,28 @@ def make_loader(
     )
 
 
-def build_optimizer(config: TrainerConfig, parameters: list[torch.nn.Parameter]):
+def build_optimizer(config: TrainerConfig, named_parameters):
+    from .scopes import component_of
+
+    base_lr = config.train.learning_rate or policy_for(config.concept.mode).default_learning_rate
+    overrides = dict(config.train.scope.lr_overrides) if hasattr(config.train.scope, "lr_overrides") else {}
     kwargs = dict(
-        lr=config.train.learning_rate or policy_for(config.concept.mode).default_learning_rate,
         betas=config.train.betas,
         eps=config.train.eps,
         weight_decay=config.train.weight_decay,
     )
+    if overrides:
+        buckets: dict[float, list[torch.nn.Parameter]] = {}
+        for name, parameter in named_parameters:
+            lr = overrides.get(component_of(name) or "", base_lr)
+            buckets.setdefault(lr, []).append(parameter)
+        param_groups = [{"params": params, "lr": lr} for lr, params in sorted(buckets.items())]
+        optimizer_params = param_groups
+    else:
+        kwargs["lr"] = base_lr
+        optimizer_params = [parameter for _, parameter in named_parameters]
     if config.train.optimizer == "adamw":
-        return torch.optim.AdamW(parameters, **kwargs)
+        return torch.optim.AdamW(optimizer_params, **kwargs)
     try:
         import bitsandbytes as bnb
     except ImportError as error:
@@ -85,7 +98,7 @@ def build_optimizer(config: TrainerConfig, parameters: list[torch.nn.Parameter])
             "train.optimizer=adamw8bit requires bitsandbytes; install the `[eightbit]` extra "
             "or set train.optimizer=adamw"
         ) from error
-    return bnb.optim.AdamW8bit(parameters, **kwargs)
+    return bnb.optim.AdamW8bit(optimizer_params, **kwargs)
 
 
 def build_scheduler(config: TrainerConfig, optimizer: torch.optim.Optimizer):
@@ -107,6 +120,31 @@ def build_scheduler(config: TrainerConfig, optimizer: torch.optim.Optimizer):
 
 
 class AnimaTrainer:
+    def _maybe_apply_quantization(self, config: TrainerConfig) -> dict | None:
+        quant_mode = getattr(config.model, "quantization", None)
+        if not quant_mode:
+            return None
+        from .quantization import CONVROT_QUANT_TYPES, apply_convrot
+
+        if quant_mode not in CONVROT_QUANT_TYPES:
+            raise ValueError(f"model.quantization must be one of {sorted(CONVROT_QUANT_TYPES)}")
+        scope = config.train.scope
+        below_block = None
+        if config.model.quantize_extent == "below_trainable":
+            blocks = getattr(scope, "blocks", None)
+            trainable_blocks = [b for b in (blocks or ()) if b is not None]
+            if not trainable_blocks:
+                raise ValueError(
+                    "quantize_extent=below_trainable requires train.scope.blocks; use extent=all for unscoped runs"
+                )
+            below_block = min(trainable_blocks)
+        return apply_convrot(
+            self.model,
+            tuple(scope.components),
+            extent=config.model.quantize_extent,
+            below_block=below_block,
+        )
+
     def __init__(self, config: TrainerConfig, *, resume: str | Path | None = None):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,6 +166,7 @@ class AnimaTrainer:
         # Conditioning is precomputed after the frozen adapter. Keeping the
         # adapter on GPU during training would waste VRAM and cannot affect loss.
         self.model.llm_adapter.to("cpu")
+        self.quant_report = self._maybe_apply_quantization(config)
         self.scope_report: ScopeReport = apply_train_scope(self.model, config.train.scope)
         # checkpointing mode resolution: explicit enum wins; legacy boolean
         # gradient_checkpointing maps to block/off when mode is unset.
@@ -179,7 +218,7 @@ class AnimaTrainer:
 
             self._ckpt_ctx = _sac_context
         self.trainable = [parameter for parameter in self.model.parameters() if parameter.requires_grad]
-        self.optimizer = build_optimizer(config, self.trainable)
+        self.optimizer = build_optimizer(config, ((name, p) for name, p in self.model.named_parameters() if p.requires_grad))
         self.scheduler = build_scheduler(config, self.optimizer)
 
         target_dataset = CachedConceptDataset(config.data.cache_dir, ("train",))
@@ -249,6 +288,10 @@ class AnimaTrainer:
             total_parameters=self.scope_report.total_parameters,
             matched=len(self.scope_report.matched_modules),
             prior_enabled=self.prior_loader is not None,
+            quantization=config.model.quantization,
+            quantize_extent=config.model.quantize_extent if config.model.quantization else None,
+            quant_modules=(self.quant_report or {}).get("modules", 0),
+            quant_by_component=(self.quant_report or {}).get("by_component", {}),
             validation_enabled=self.validation is not None,
         )
 

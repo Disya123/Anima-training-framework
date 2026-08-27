@@ -8,9 +8,15 @@ from torch import nn
 
 from .config import ScopeConfig, torch_dtype
 from .lora import inject_lora
-
+from .quantization import CONVROT_QUANT_TYPES, ConvRotLinear
 
 _BLOCK_RE = re.compile(r"^blocks\.(\d+)\.")
+
+_TRAINABLE_TARGET_TYPES = (nn.Linear, ConvRotLinear)
+
+
+def _is_quantized_linear(module: nn.Module) -> bool:
+    return type(module).__name__ in {"ConvRotLinear"} or hasattr(module, "cr_w_t")
 
 
 @dataclass(frozen=True)
@@ -59,7 +65,9 @@ def _block_selected(name: str, blocks: tuple[int, ...] | None) -> bool:
 def select_lora_modules(model: nn.Module, scope: ScopeConfig) -> tuple[str, ...]:
     selected: list[str] = []
     for name, module in model.named_modules():
-        if not isinstance(module, nn.Linear) or name.startswith("llm_adapter"):
+        if name.startswith("llm_adapter"):
+            continue
+        if not isinstance(module, _TRAINABLE_TARGET_TYPES):
             continue
         if not _component_selected(name, scope.components):
             continue
