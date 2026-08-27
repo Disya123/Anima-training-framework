@@ -79,14 +79,21 @@ class CosmosAttention(nn.Module):
         def _unwrap(mod):
             return mod.base_layer if hasattr(mod, "base_layer") else mod
 
-        bq, bk, bv = _unwrap(self.q_proj), _unwrap(self.k_proj), _unwrap(self.v_proj)
-        if any(hasattr(m, "cr_w_t") for m in (bq, bk, bv)):
+        wrappers = (self.q_proj, self.k_proj, self.v_proj)
+        bases = tuple(_unwrap(m) for m in wrappers)
+        if any(hasattr(b, "cr_w_t") for b in bases):
             # quantized projections: weight-cat cache cannot represent packed
             # int8 storage; route through wrappers (LoRA deltas included there)
-            return self.q_proj(x), self.k_proj(x), self.v_proj(x)
-        wq = bq.weight
-        wk = bk.weight
-        wv = bv.weight
+            return tuple(m(x) for m in wrappers)
+        trainable_base = any(p.requires_grad for b in bases for p in b.parameters(recurse=True))
+        lora_present = any(hasattr(m, "lora_down") for m in wrappers)
+        if trainable_base or (lora_present and any(not m.enabled for m in wrappers)):
+            # trainable bases invalidate the frozen-weight cache; disabled
+            # wrappers must be bypassed so lora_disabled() is honored exactly
+            return tuple(m(x) for m in wrappers)
+        wq = bases[0].weight
+        wk = bases[1].weight
+        wv = bases[2].weight
         w_qkv = self._w_qkv_cache
         if w_qkv is None or w_qkv.device != wq.device or w_qkv.dtype != wq.dtype or w_qkv.is_inference():
             w_qkv = torch.cat([wq, wk, wv], dim=0)
@@ -98,16 +105,14 @@ class CosmosAttention(nn.Module):
         out = F.linear(x, w_qkv)
         nq, nk = wq.shape[0], wk.shape[0]
         q, k, v = out.split([nq, nk, wv.shape[0]], dim=-1)
-        if hasattr(self.q_proj, "lora_down"):
-            d = F.linear(F.linear(x, self.q_proj.lora_down.weight), self.q_proj.lora_up.weight) * self.q_proj.scaling
-            q = q + d.to(q.dtype)
-        if hasattr(self.k_proj, "lora_down"):
-            d = F.linear(F.linear(x, self.k_proj.lora_down.weight), self.k_proj.lora_up.weight) * self.k_proj.scaling
-            k = k + d.to(k.dtype)
-        if hasattr(self.v_proj, "lora_down"):
-            d = F.linear(F.linear(x, self.v_proj.lora_down.weight), self.v_proj.lora_up.weight) * self.v_proj.scaling
-            v = v + d.to(v.dtype)
-        return q, k, v
+        parts = [q, k, v]
+        for idx, proj in enumerate((self.q_proj, self.k_proj, self.v_proj)):
+            if hasattr(proj, "lora_down") and proj.enabled:
+                # mirror LoRALinear semantics incl. adapter dropout
+                adapter_input = proj.dropout(x.to(proj.lora_down.weight.dtype))
+                d = F.linear(F.linear(adapter_input, proj.lora_down.weight), proj.lora_up.weight) * proj.scaling
+                parts[idx] = parts[idx] + d.to(parts[idx].dtype)
+        return tuple(parts)
 
     def forward(self, x, context=None, rope_emb=None):
         context = x if context is None else context

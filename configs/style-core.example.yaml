@@ -48,6 +48,7 @@ train:
   checkpoint_mode: block
   checkpoint_sac: sdpa
   anchor_no_trigger_weight: 8.0
+  anchor_every: 4
   log_every: 10
   save_every: 50
 

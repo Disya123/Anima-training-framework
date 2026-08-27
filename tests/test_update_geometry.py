@@ -7,11 +7,49 @@ from anima_trainer.update_geometry import (
     deltas_from_lora_state,
     effective_rank,
     factor_spectra,
+    kohya_to_module_name,
     layer_spectrum,
     rank_for_energy,
     spectra_report,
     truncated_lora_state,
 )
+
+
+def test_kohya_name_roundtrip_preserves_components():
+    cases = {
+        "lora_unet_blocks_14_cross_attn_q_proj": "blocks.14.cross_attn.q_proj",
+        "lora_unet_blocks_17_mlp_layer1": "blocks.17.mlp.layer1",
+        "lora_unet_blocks_14_adaln_modulation_mlp": "blocks.14.adaln_modulation_mlp",
+        "lora_unet_blocks_5_self_attn_output_proj": "blocks.5.self_attn.output_proj",
+        "lora_unet_final_layer_linear_2": "final_layer.linear_2",
+    }
+    for kohya, want in cases.items():
+        assert kohya_to_module_name(kohya) == want, kohya
+
+
+def test_adapter_file_components_classify(tmp_path):
+    """Export -> analyze round trip: component names must survive kohya keys."""
+    from anima_trainer.lora import LoRALinear
+    from anima_trainer.update_geometry import factor_spectra
+    from torch import nn
+
+    lin = nn.Linear(16, 16, bias=False)
+    wrapper = LoRALinear(lin, rank=4, alpha=4)
+    with torch.no_grad():
+        wrapper.lora_up.weight.copy_(torch.randn_like(wrapper.lora_up.weight) * 0.1)
+    path = tmp_path / "toy.safetensors"
+    from anima_trainer.lora import save_kohya_lora
+
+    class Holder(nn.Module):
+        def __init__(self, w):
+            super().__init__()
+            self.blocks_0_cross_attn_q_proj = w
+
+    save_kohya_lora(Holder(wrapper), path)
+    factors = adapter_factors_from_file(path)
+    assert factors, "no factors parsed"
+    for _full, (name, _a, _b) in factors.items():
+        assert name == "blocks.0.cross_attn.q_proj", name
 
 
 def test_rank_for_energy_exact_spectrum():

@@ -99,11 +99,88 @@ def _condition_key(prompt: str, content_prompt: str) -> str:
     return hashlib.sha256((prompt + "\0" + content_prompt).encode("utf-8")).hexdigest()[:24]
 
 
+CACHE_FORMAT_VERSION = 2
+_FINGERPRINT_BYTES = 262144
+
+
+def _file_fingerprint(path: str | Path) -> str:
+    """Cheap content-ish fingerprint: name + size + mtime + head/tail bytes."""
+    p = Path(path)
+    st = p.stat()
+    h = hashlib.sha256()
+    h.update(f"{p.name}:{st.st_size}:{st.st_mtime_ns}".encode("utf-8"))
+    with p.open("rb") as handle:
+        h.update(handle.read(_FINGERPRINT_BYTES))
+        if st.st_size > 2 * _FINGERPRINT_BYTES:
+            handle.seek(-_FINGERPRINT_BYTES, 2)
+            h.update(handle.read(_FINGERPRINT_BYTES))
+    return h.hexdigest()[:20]
+
+
+def _model_fingerprints(config: TrainerConfig) -> dict[str, str]:
+    return {
+        "vae_sig": _file_fingerprint(config.model.vae),
+        "te_sig": _file_fingerprint(config.model.text_encoder),
+        "dit_sig": _file_fingerprint(config.model.checkpoint),
+    }
+
+
+def _hash_text(payload: str) -> str:
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _latent_signature(image_fp: str, bucket: tuple[int, int], vae_fp: str) -> str:
+    return _hash_text(f"latent:v1:{image_fp}:{bucket[0]}x{bucket[1]}:{vae_fp}")
+
+
+def _cond_signature(prompt: str, content_prompt: str, te_fp: str, dit_fp: str) -> str:
+    return _hash_text(f"cond:v1:{prompt}\0{content_prompt}\0{te_fp}\0{dit_fp}")
+
+
+def validate_cache_signatures(config: TrainerConfig) -> None:
+    """Raise if an existing cache was built against different base models.
+
+    Legacy caches (format_version missing) only warn: they predate signatures
+    and must not hard-block established runs.
+    """
+    for prior in (False, True):
+        if prior and config.data.prior_manifest is None:
+            continue
+        cache_dir = _cache_dir(config, prior)
+        meta_path = cache_dir / "cache_metadata.json"
+        if not meta_path.is_file():
+            continue
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if int(meta.get("format_version", 1)) < CACHE_FORMAT_VERSION:
+            print(f"[cache] {cache_dir}: legacy format without signatures; run `anima-trainer cache --force` to adopt")
+            continue
+        if int(meta.get("resolution", -1)) != config.data.resolution:
+            raise ValueError(f"cache {cache_dir}: resolution changed ({meta.get('resolution')} -> {config.data.resolution}); run `anima-trainer cache --force`")
+        fps = _model_fingerprints(config)
+        for key, current in fps.items():
+            if meta.get(key) != current:
+                raise ValueError(
+                    f"cache {cache_dir}: {key} changed since caching; run `anima-trainer cache --force`"
+                )
+
+
 def _cache_dir(config: TrainerConfig, prior: bool) -> Path:
     result = config.data.prior_cache_dir if prior else config.data.cache_dir
     if result is None:
         raise ValueError("prior cache requested without data.prior_manifest")
     return result
+
+
+def _read_old_index(cache_dir: Path) -> dict[str, dict]:
+    index_path = cache_dir / "index.jsonl"
+    if not index_path.is_file():
+        return {}
+    entries: dict[str, dict] = {}
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            entry = json.loads(line)
+            entries[entry["id"]] = entry
+    return entries
 
 
 def cache_latents(
@@ -112,15 +189,21 @@ def cache_latents(
     *,
     prior: bool,
     force: bool = False,
-) -> dict[str, tuple[str, tuple[int, int]]]:
+):
     records = list(records)
     cache_dir = _cache_dir(config, prior)
     latent_dir = cache_dir / "latents"
     latent_dir.mkdir(parents=True, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    encoder = LatentEncoder(config.model.vae, device=device, dtype=torch_dtype(config.model.dtype))
-    result: dict[str, tuple[str, tuple[int, int]]] = {}
-    for record in tqdm(records, desc="VAE cache", unit="image"):
+    old_index = {} if force else _read_old_index(cache_dir)
+    fps = _model_fingerprints(config)
+
+    def entry_signature(record: ManifestRecord, bucket: tuple[int, int]) -> str:
+        return _latent_signature(_file_fingerprint(record.image), bucket, fps["vae_sig"])
+
+    pending: list[ManifestRecord] = []
+    signature_of: dict[str, str] = {}
+    bucket_of: dict[str, tuple[int, int]] = {}
+    for record in records:
         with Image.open(record.image) as probe:
             bucket = choose_bucket(
                 probe.width,
@@ -129,22 +212,32 @@ def cache_latents(
                 config.data.aspect_buckets,
                 config.data.bucket_multiple,
             )
-        relative = Path("latents") / f"{record.id}.safetensors"
-        destination = cache_dir / relative
-        if force or not destination.is_file():
-            image = load_bucketed_image(record.image, bucket).unsqueeze(0)
-            latent = encoder.encode(image)[0].to(torch.bfloat16).cpu().contiguous()
-            save_file(
-                {"latent": latent},
-                str(destination),
-                metadata={"source": str(record.image), "format": "pt"},
-            )
-        result[record.id] = (relative.as_posix(), bucket)
+        sig = entry_signature(record, bucket)
+        signature_of[record.id] = sig
+        bucket_of[record.id] = bucket
+        destination = cache_dir / "latents" / f"{record.id}.safetensors"
+        old = old_index.get(record.id) or {}
+        if force or not destination.is_file() or old.get("sig") != sig:
+            pending.append(record)
+
+    encoder = None
+    for record in tqdm(pending, desc="VAE cache", unit="image"):
+        if encoder is None:
+            encoder = LatentEncoder(config.model.vae, device="cuda" if torch.cuda.is_available() else "cpu", dtype=torch_dtype(config.model.dtype))
+        image = load_bucketed_image(record.image, bucket_of[record.id]).unsqueeze(0)
+        latent = encoder.encode(image)[0].to(torch.bfloat16).cpu().contiguous()
+        destination = cache_dir / "latents" / f"{record.id}.safetensors"
+        save_file(
+            {"latent": latent},
+            str(destination),
+            metadata={"source": str(record.image), "format": "pt"},
+        )
     del encoder
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return result
+    result = {record.id: (f"latents/{record.id}.safetensors", bucket_of[record.id]) for record in records}
+    return result, signature_of, len(pending)
 
 
 def cache_conditioning(
@@ -153,44 +246,61 @@ def cache_conditioning(
     *,
     prior: bool,
     force: bool = False,
-) -> dict[str, str]:
+):
     records = list(records)
     cache_dir = _cache_dir(config, prior)
     cond_dir = cache_dir / "conditioning"
     cond_dir.mkdir(parents=True, exist_ok=True)
-    conditioner = AnimaConditioner(
-        config.model.text_encoder,
-        config.model.checkpoint,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        dtype=torch_dtype(config.model.dtype),
-    )
+    old_index = {} if force else _read_old_index(cache_dir)
+    fps = _model_fingerprints(config)
     key_to_prompts = {
         _condition_key(record.prompt, record.content_prompt): (record.prompt, record.content_prompt)
         for record in records
     }
-    for key, (prompt, content_prompt) in tqdm(
-        key_to_prompts.items(), desc="conditioning cache", unit="prompt"
-    ):
+    signature_of: dict[str, str] = {}
+    pending: list[str] = []
+    for key, (prompt, content_prompt) in key_to_prompts.items():
+        sig = _cond_signature(prompt, content_prompt, fps["te_sig"], fps["dit_sig"])
+        signature_of[key] = sig
         destination = cond_dir / f"{key}.safetensors"
         if force or not destination.is_file():
-            cond = conditioner.encode(prompt).to(torch.bfloat16)
-            cond_no_trigger = cond.clone() if content_prompt == prompt else conditioner.encode(content_prompt).to(torch.bfloat16)
-            save_file(
-                {"cond": cond.contiguous(), "cond_no_trigger": cond_no_trigger.contiguous()},
-                str(destination),
-                metadata={"prompt": prompt, "content_prompt": content_prompt, "format": "pt"},
+            pending.append(key)
+            continue
+        # existing file: validate stored signature via sidecar index when present
+        stale = not old_index or all(
+            entry.get("cond_sig") != sig
+            for entry in old_index.values()
+            if entry.get("conditioning_file") == f"conditioning/{key}.safetensors"
+        )
+        if stale:
+            pending.append(key)
+
+    conditioner = None
+    for key in tqdm(pending, desc="conditioning cache", unit="prompt"):
+        if conditioner is None:
+            conditioner = AnimaConditioner(
+                config.model.text_encoder,
+                config.model.checkpoint,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                dtype=torch_dtype(config.model.dtype),
             )
+        prompt, content_prompt = key_to_prompts[key]
+        cond = conditioner.encode(prompt).to(torch.bfloat16)
+        cond_no_trigger = cond.clone() if content_prompt == prompt else conditioner.encode(content_prompt).to(torch.bfloat16)
+        save_file(
+            {"cond": cond.contiguous(), "cond_no_trigger": cond_no_trigger.contiguous()},
+            str(cond_dir / f"{key}.safetensors"),
+            metadata={"prompt": prompt, "content_prompt": content_prompt, "format": "pt"},
+        )
     del conditioner
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return {
-        record.id: (
-            Path("conditioning")
-            / f"{_condition_key(record.prompt, record.content_prompt)}.safetensors"
-        ).as_posix()
+    cond_map = {
+        record.id: f"conditioning/{_condition_key(record.prompt, record.content_prompt)}.safetensors"
         for record in records
     }
+    return cond_map, signature_of, len(pending)
 
 
 def write_cache_index(
@@ -200,14 +310,19 @@ def write_cache_index(
     conditioning_map: dict[str, str],
     *,
     prior: bool,
+    latent_sigs: dict[str, str] | None = None,
+    cond_sigs: dict[str, str] | None = None,
 ) -> Path:
     records = list(records)
+    latent_sigs = latent_sigs or {}
+    cond_sigs = cond_sigs or {}
     cache_dir = _cache_dir(config, prior)
     cache_dir.mkdir(parents=True, exist_ok=True)
     destination = cache_dir / "index.jsonl"
     with destination.open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
             latent_file, bucket = latent_map[record.id]
+            cond_key = _condition_key(record.prompt, record.content_prompt)
             entry = {
                 "id": record.id,
                 "image": str(record.image),
@@ -223,6 +338,8 @@ def write_cache_index(
                 "bucket": list(bucket),
                 "latent_file": latent_file,
                 "conditioning_file": conditioning_map[record.id],
+                "sig": latent_sigs.get(record.id),
+                "cond_sig": cond_sigs.get(cond_key),
                 "prior": prior,
             }
             handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
@@ -234,6 +351,8 @@ def write_cache_index(
         "resolution": config.data.resolution,
         "prior": prior,
         "records": len(records),
+        "format_version": CACHE_FORMAT_VERSION,
+        **_model_fingerprints(config),
     }
     (cache_dir / "cache_metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -245,7 +364,16 @@ def cache_dataset(config: TrainerConfig, *, prior: bool = False, force: bool = F
     records = records_from_config(config, prior=prior)
     if not records:
         raise ValueError("no prior manifest configured")
-    latent_map = cache_latents(config, records, prior=prior, force=force)
-    conditioning_map = cache_conditioning(config, records, prior=prior, force=force)
-    return write_cache_index(config, records, latent_map, conditioning_map, prior=prior)
+    latent_map, latent_sigs, latents_encoded = cache_latents(config, records, prior=prior, force=force)
+    conditioning_map, cond_sigs, conds_encoded = cache_conditioning(config, records, prior=prior, force=force)
+    print(f"[cache] latents: {latents_encoded}/{len(records)} encoded, conditioning: {conds_encoded} prompts encoded")
+    return write_cache_index(
+        config,
+        records,
+        latent_map,
+        conditioning_map,
+        prior=prior,
+        latent_sigs=latent_sigs,
+        cond_sigs=cond_sigs,
+    )
 

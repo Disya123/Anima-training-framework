@@ -221,6 +221,10 @@ class AnimaTrainer:
         self.optimizer = build_optimizer(config, ((name, p) for name, p in self.model.named_parameters() if p.requires_grad))
         self.scheduler = build_scheduler(config, self.optimizer)
 
+        from .cache import validate_cache_signatures
+
+        validate_cache_signatures(config)
+
         target_dataset = CachedConceptDataset(config.data.cache_dir, ("train",))
         self.target_loader = EndlessLoader(
             make_loader(
@@ -362,9 +366,10 @@ class AnimaTrainer:
         if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(target_loss):
             raise FloatingPointError(f"non-finite target loss at step {self.step}: {target_loss.item()}")
         (target_loss * inv_accum).backward()
-        out = {"target_loss": float(target_loss.detach().item())}
+        # detached GPU scalars: .item() here would sync every micro-batch
+        out = {"target_loss": target_loss.detach()}
 
-        anchor_loss = 0.0
+        anchor_loss = None
         if anchor_weight > 0:
             with torch.no_grad(), lora_disabled(self.model):
                 base_pred = self._velocity_forward(noisy, sigmas, cond_no_trigger)
@@ -378,10 +383,10 @@ class AnimaTrainer:
             if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(a_loss):
                 raise FloatingPointError(f"non-finite anchor loss at step {self.step}: {a_loss.item()}")
             ((a_loss * anchor_weight) * inv_accum).backward()
-            anchor_loss = float(a_loss.detach().item())
+            anchor_loss = a_loss.detach()
         out["anchor_loss"] = anchor_loss
 
-        prior_loss = 0.0
+        prior_loss = None
         if prior_batch is not None and prior_weight > 0:
             p_cond, _, p_weights, p_sigmas, p_flow = self._build_step(prior_batch)
             p_prediction = self._velocity_forward(p_flow.noisy_latents, p_sigmas, p_cond)
@@ -389,7 +394,7 @@ class AnimaTrainer:
             if getattr(self.config.train, "debug_sync_checks", False) and not torch.isfinite(pl):
                 raise FloatingPointError(f"non-finite prior loss at step {self.step}: {pl.item()}")
             ((pl * prior_weight) * inv_accum).backward()
-            prior_loss = float(pl.detach().item())
+            prior_loss = pl.detach()
         out["prior_loss"] = prior_loss
         return out
 
@@ -440,28 +445,32 @@ class AnimaTrainer:
         config = self.config
         self.model.train()
         last_log_time = time.time()
-        loss_target_sum = 0.0
-        loss_prior_sum = 0.0
-        loss_anchor_sum = 0.0
-        log_count = 0
+        loss_target: list[torch.Tensor] = []
+        loss_prior: list[torch.Tensor] = []
+        loss_anchor: list[torch.Tensor] = []
+        anchor_active = 0
+        micro_count = 0
         while self.step < config.train.steps:
             self.optimizer.zero_grad(set_to_none=True)
             for _ in range(config.train.gradient_accumulation):
-                anchor_active = config.train.anchor_no_trigger_weight > 0 and (
+                anchor_active_this = config.train.anchor_no_trigger_weight > 0 and (
                     config.train.anchor_every <= 1 or self.step % config.train.anchor_every == 0
                 )
                 prior_batch = self.prior_loader.next() if self.prior_loader is not None else None
                 stats = self._sequential_step(
                     self.target_loader.next(),
-                    anchor_weight=config.train.anchor_no_trigger_weight if anchor_active else 0.0,
+                    anchor_weight=config.train.anchor_no_trigger_weight if anchor_active_this else 0.0,
                     inv_accum=1.0 / config.train.gradient_accumulation,
                     prior_batch=prior_batch,
                     prior_weight=config.data.prior_loss_weight if prior_batch is not None else 0.0,
                 )
-                loss_target_sum += stats["target_loss"]
-                loss_prior_sum += stats["prior_loss"]
-                loss_anchor_sum += stats["anchor_loss"]
-                log_count += 1
+                loss_target.append(stats["target_loss"])
+                if stats["prior_loss"] is not None:
+                    loss_prior.append(stats["prior_loss"])
+                if stats["anchor_loss"] is not None:
+                    loss_anchor.append(stats["anchor_loss"])
+                    anchor_active += 1
+                micro_count += 1
 
             grad_norm = torch.nn.utils.clip_grad_norm_(self.trainable, config.train.max_grad_norm)
             self.optimizer.step()
@@ -470,21 +479,29 @@ class AnimaTrainer:
 
             if self.step % config.train.log_every == 0:
                 now = time.time()
+                target_mean = torch.stack(loss_target).mean().item() if loss_target else 0.0
+                prior_mean = torch.stack(loss_prior).mean().item() if loss_prior else 0.0
+                anchor_mean_all = torch.stack(loss_anchor).mean().item() if loss_anchor else 0.0
+                if not torch.isfinite(torch.stack(loss_target).sum()) or (loss_anchor and not torch.isfinite(torch.stack(loss_anchor).sum())):
+                    raise FloatingPointError(f"non-finite losses at step {self.step}")
                 self._event(
                     "log",
                     step=self.step,
-                    target_loss=loss_target_sum / max(1, log_count),
-                    prior_loss=loss_prior_sum / max(1, log_count),
-                    anchor_loss=loss_anchor_sum / max(1, log_count),
+                    target_loss=target_mean,
+                    prior_loss=prior_mean,
+                    anchor_loss=anchor_mean_all,
+                    anchor_loss_when_active=(anchor_mean_all * micro_count / anchor_active) if anchor_active else 0.0,
+                    anchor_active_fraction=anchor_active / max(1, micro_count),
                     grad_norm=float(grad_norm),
                     learning_rate=float(self.optimizer.param_groups[0]["lr"]),
                     seconds_per_step=(now - last_log_time) / config.train.log_every,
                     peak_vram_gib=torch.cuda.max_memory_allocated() / 2**30,
                 )
-                loss_target_sum = 0.0
-                loss_prior_sum = 0.0
-                loss_anchor_sum = 0.0
-                log_count = 0
+                loss_target = []
+                loss_prior = []
+                loss_anchor = []
+                anchor_active = 0
+                micro_count = 0
                 last_log_time = now
 
             if self.step % config.train.save_every == 0:

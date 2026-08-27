@@ -14,6 +14,62 @@ from .lora import LoRALinear, named_lora_modules
 
 _ENERGY_TARGETS = (0.50, 0.90, 0.99)
 
+# module-name tokens used to denormalize kohya `lora_unet_*` names back into
+# dot-separated module paths; longest-first so multi-word tokens win
+_NAME_TOKENS = sorted(
+    {
+        "blocks",
+        "self_attn",
+        "cross_attn",
+        "mlp",
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "output_proj",
+        "layer1",
+        "layer2",
+        "final_layer",
+        "x_embedder",
+        "t_embedder",
+        "t_embedding_norm",
+        "llm_adapter",
+        "linear_1",
+        "linear_2",
+        "adaln_modulation_",
+        "adaln_modulation_self_attn",
+        "adaln_modulation_cross_attn",
+        "adaln_modulation_mlp",
+        "proj",
+    },
+    key=len,
+    reverse=True,
+)
+
+
+def kohya_to_module_name(full: str) -> str:
+    """`lora_unet_blocks_14_cross_attn_q_proj` -> `blocks.14.cross_attn.q_proj`.
+
+    A global underscore->dot replacement would corrupt compound component
+    names (`cross_attn` -> `cross.attn`), so split on known tokens instead.
+    """
+    body = full[len("lora_unet_"):] if full.startswith("lora_unet_") else full
+    parts: list[str] = []
+    i = 0
+    while i < len(body):
+        match = next((tok for tok in _NAME_TOKENS if body.startswith(tok, i)), None)
+        if match is not None:
+            parts.append(match)
+            i += len(match)
+            continue
+        j = i + 1
+        while j < len(body) and not any(body.startswith(tok, j) for tok in _NAME_TOKENS):
+            j += 1
+        segment = body[i:j].strip("_")
+        if segment:
+            parts.append(segment)
+        i = j
+    return ".".join(parts)
+
 
 def deltas_from_lora_model(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     result: dict[str, torch.Tensor] = {}
@@ -274,7 +330,7 @@ def adapter_factors_from_file(path: str | Path, device: str | torch.device = "cp
     factors: dict[str, tuple[str, torch.Tensor, torch.Tensor]] = {}
     if kohya:
         for full, parts in kohya.items():
-            name = full[len("lora_unet_"):].replace("_", ".") if full.startswith("lora_unet_") else full
+            name = kohya_to_module_name(full)
             A, B, transposed = _resolve_orientation(full, parts["down"], parts["up"])
             factors[full + ("#T" if transposed else "")] = (name, A, B)
         return factors

@@ -37,13 +37,22 @@ def sample_sigmas(
     return shift_sigmas(sigmas, shift)
 
 
+def _bell_raw(t01: torch.Tensor) -> torch.Tensor:
+    y = torch.exp(-2.0 * ((t01 * 1000.0 - 500.0) / 1000.0) ** 2)
+    return (y - math.exp(-0.5)).clamp_min(0.0)
+
+
+# mean of the unnormalized bell over the uniform sigma grid; dividing by it
+# makes E[w] == 1 so weighted gradients keep the unweighted overall scale
+_BELL_MEAN = float(_bell_raw(torch.linspace(0.0, 1.0, 2048, dtype=torch.float64)).mean())
+
+
 def bell_timestep_weights(sigmas: torch.Tensor) -> torch.Tensor:
-    """Per-sample loss weights replicating ai-toolkit's bell-shaped
-    mean-normalized timestep weighing (timestep_type=weighted)."""
-    t = sigmas.clamp(0, 1) * 1000.0
-    y = torch.exp(-2.0 * ((t - 500.0) / 1000.0) ** 2)
-    w = y - math.exp(-0.5)
-    return w.clamp_min(0.0)
+    """Per-sample loss weights: bell-shaped and MEAN-NORMALIZED (E[w] == 1
+    over the uniform sigma distribution, ai-toolkit timestep_type=weighted
+    convention). Must be multiplied into the loss WITHOUT per-batch
+    renormalization — normalizing by batch weight sums cancels the shape."""
+    return _bell_raw(sigmas.clamp(0.0, 1.0)) / _BELL_MEAN
 
 
 @dataclass(frozen=True)
@@ -92,7 +101,7 @@ def weighted_flow_mse(
     weights = weights.to(device=per_sample.device, dtype=per_sample.dtype).flatten()
     if weights.shape != per_sample.shape:
         raise ValueError("weights must contain one scalar per sample")
-    if torch.any(weights <= 0):
-        raise ValueError("all sample weights must be positive")
-    return (per_sample * weights).sum() / weights.sum()
+    # fixed mean-normalization: per-batch weight sums would cancel the shape
+    # entirely at batch=1 (and in expectation at any batch size)
+    return (per_sample * weights).mean()
 

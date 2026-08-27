@@ -121,6 +121,8 @@ def load_manifest(
                 raise TypeError(f"{path}:{line_number}: hard_tags must be a list")
             hard_tags = tuple(str(tag) for tag in hard_tags_raw)
             weight = effective_weight(float(raw.get("weight", 1.0)), hard_tags, hard_tag_weights or {})
+            if weight <= 0:
+                raise ValueError(f"{path}:{line_number}: sample weight must be positive (got {weight})")
             split = str(raw.get("split", "train"))
             if split not in {"train", "validation", "test"}:
                 raise ValueError(f"{path}:{line_number}: split must be train, validation, or test")

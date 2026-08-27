@@ -113,7 +113,7 @@ def test_anchor_weight_scales_contribution():
     s_b = tr_b._sequential_step(make_batch(5), anchor_weight=4.0, inv_accum=1.0, prior_batch=None, prior_weight=0.0)
     ga = sum(p.grad.abs().sum().item() for p in tr_a.model.parameters() if p.grad is not None)
     gb = sum(p.grad.abs().sum().item() for p in tr_b.model.parameters() if p.grad is not None)
-    assert s_a["anchor_loss"] == 0.0 and s_b["anchor_loss"] > 0.0
+    assert s_a["anchor_loss"] is None and s_b["anchor_loss"] > 0.0
     assert gb > ga
 
 

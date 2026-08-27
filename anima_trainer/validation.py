@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import random
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,12 @@ class ValidationRunner:
     ):
         self.dataset = dataset
         self.fixed_sigmas = fixed_sigmas
-        self.indices = tuple(range(min(max_samples, len(dataset))))
+        # deterministic pseudo-random selection over the held-out split:
+        # taking the first N entries would bias towards sorted ids
+        total = len(dataset)
+        count = min(max_samples, total)
+        rng = random.Random(seed ^ 0x5EED_CAFE)
+        self.indices = tuple(sorted(rng.sample(range(total), count))) if count < total else tuple(range(total))
         self.seed = seed
         self.baseline: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -87,7 +93,7 @@ class ValidationRunner:
         path.parent.mkdir(parents=True, exist_ok=True)
         bucket_signature = None
         if self.dataset.entries:
-            bucket_signature = tuple(tuple(e["bucket"]) for e in self.dataset.entries[: len(self.indices)])
+            bucket_signature = tuple(tuple(e["bucket"]) for e in [self.dataset.entries[i] for i in self.indices])
         torch.save(
             {
                 "fixed_sigmas": self.fixed_sigmas,
@@ -106,7 +112,7 @@ class ValidationRunner:
             raise ValueError("validation baseline settings do not match current config")
         bucket_signature = None
         if self.dataset.entries:
-            bucket_signature = tuple(tuple(e["bucket"]) for e in self.dataset.entries[: len(self.indices)])
+            bucket_signature = tuple(tuple(e["bucket"]) for e in [self.dataset.entries[i] for i in self.indices])
         if state.get("bucket_signature") is not None and bucket_signature is not None:
             if tuple(state["bucket_signature"]) != tuple(bucket_signature):
                 raise ValueError("validation baseline buckets do not match current cache (stale baseline)")
