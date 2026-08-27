@@ -102,18 +102,21 @@ def main() -> int:
         per_step = timed(trainer, args.steps)
         peak = torch.cuda.max_memory_allocated() / 2**30
         rows.append({"combo": params, "ms_per_step": per_step, "peak_vram_gib": peak})
-        print(f"[{idx + 1}/{len(combos)}] {tag:<28} {per_step:7.0f} ms/step | peak {peak:.2f} GiB | init {time.perf_counter() - t_init:.0f}s")
+        samples_per_step = int(params.get("mbs", cfg.train.micro_batch_size)) * cfg.train.gradient_accumulation
+        rows[-1]["ms_per_sample"] = per_step / samples_per_step
+        print(f"[{idx + 1}/{len(combos)}] {tag:<28} {per_step:7.0f} ms/step ({per_step / samples_per_step:6.0f} ms/sample) | peak {peak:.2f} GiB | init {time.perf_counter() - t_init:.0f}s")
         del trainer
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
     if rows:
-        best = min(rows, key=lambda r: r["ms_per_step"])
-        base = next(r for r in rows if r["combo"].get("mbs") == "1" and r["combo"].get("workers") == "0")
-        print("\nsummary (speedup vs mbs1/workers0 baseline):")
+        best = min(rows, key=lambda r: r["ms_per_sample"])
+        base = next((r for r in rows if r["combo"].get("mbs") == "1" and r["combo"].get("workers") == "0"), None)
+        print("\nsummary (normalized per SAMPLE):")
         for r in rows:
-            print(f"  {json.dumps(r['combo']):<44} {r['ms_per_step']:7.0f} ms  {base['ms_per_step'] / r['ms_per_step']:.2f}x")
-        print(f"best: {json.dumps(best['combo'])} at {best['ms_per_step']:.0f} ms/step")
+            speed = f"{base['ms_per_sample'] / r['ms_per_sample']:.2f}x" if base else "-"
+            print(f"  {json.dumps(r['combo']):<44} {r['ms_per_step']:7.0f} ms/step  {r['ms_per_sample']:6.0f} ms/sample  {speed}")
+        print(f"best: {json.dumps(best['combo'])} at {best['ms_per_sample']:.0f} ms/sample")
     return 0
 
 
