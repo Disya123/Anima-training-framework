@@ -255,7 +255,7 @@ def load_config(path: str | Path) -> TrainerConfig:
     if mode not in {"style", "character", "object", "general"}:
         raise ValueError("concept.mode must be style, character, object, or general")
     trigger_position = str(concept_raw.get("trigger_position", "prefix"))
-    if trigger_position not in {"prefix", "suffix"}:
+    if trigger_position not in {"prefix", "suffix", "suffix_period", "middle"}:
         raise ValueError("concept.trigger_position must be prefix or suffix")
     hard_tag_weights = {str(k): float(v) for k, v in _mapping(concept_raw.get("hard_tag_weights"), "concept.hard_tag_weights").items()}
     if any(v <= 0 for v in hard_tag_weights.values()):

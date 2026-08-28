@@ -1,0 +1,64 @@
+project:
+  name: tarisasu
+  output_dir: ../runs/tarisasu
+  seed: 42
+
+model:
+  checkpoint: E:/AI/Main-ComfyUI/ComfyUI/models/unet/anima_baseV10.safetensors
+  vae: E:/AI/Main-ComfyUI/ComfyUI/models/vae/qwen_image_vae.safetensors
+  text_encoder: E:/AI/Main-ComfyUI/ComfyUI/models/clip/qwen_3_06b_base.safetensors
+  dtype: bfloat16
+
+data:
+  manifest: ../data/tarisasu/manifest.jsonl
+  cache_dir: ../data/tarisasu/cache1024
+  resolution: 1024
+  num_workers: 0
+
+concept:
+  mode: style
+  trigger: "@TuriSasu"
+  trigger_position: prefix
+
+train:
+  scope:
+    kind: selected_blocks_lora
+    blocks: [14, 15, 16, 17, 18]
+    components: [modulation, cross_attn, mlp]
+    rank: 8
+    alpha: 8
+    rank_overrides:
+      modulation: {rank: 2}
+      mlp: {rank: 6}
+    lr_overrides:
+      cross_attn: 0.00008
+      mlp: 0.00004
+      modulation: 0.00002
+    dropout: 0.0
+    trainable_dtype: float32
+  steps: 850
+  micro_batch_size: 1
+  gradient_accumulation: 2
+  learning_rate: 0.00008
+  optimizer: adamw8bit
+  weight_decay: 0.00011
+  betas: [0.9, 0.99]
+  lr_scheduler: constant
+  warmup_steps: 25
+  timestep_sampling: weighted
+  sigmoid_scale: 1.0
+  sigma_shift: 1.0
+  gradient_checkpointing: true
+  checkpoint_mode: block
+  checkpoint_sac: sdpa
+  fast_loss_reduction: true
+  anchor_no_trigger_weight: 8.0
+  anchor_every: 4
+  log_every: 10
+  save_every: 30
+
+validation:
+  enabled: true
+  every: 30
+  max_samples: 3
+  fixed_sigmas: [0.25, 0.6, 0.85]

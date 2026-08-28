@@ -85,6 +85,14 @@ def build_prompt(
         return f"{trigger}, {content}" if content else trigger, content, trigger
     if trigger_position == "suffix":
         return f"{content}, {trigger}" if content else trigger, content, trigger
+    if trigger_position == "suffix_period":
+        return f"{content}, {trigger}." if content else f"{trigger}.", content, trigger
+    if trigger_position == "middle":
+        parts = [part for part in content.split(", ") if part] if content else []
+        if not parts:
+            return trigger, content, trigger
+        parts.insert(max(1, len(parts) // 2), trigger)
+        return ", ".join(parts), content, trigger
     raise ValueError(f"unsupported trigger_position: {trigger_position}")
 
 

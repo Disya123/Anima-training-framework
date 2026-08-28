@@ -73,3 +73,36 @@ def test_audit_reports_missing_factor_diversity():
     )
     assert any("pose" in warning for warning in report["warnings"])
 
+
+
+def test_middle_position_inserts_trigger_between_tags():
+    prompt, content, trigger = build_prompt(
+        "1girl, sitting, cafe",
+        mode="style",
+        record_trigger="@style",
+        trigger_position="middle",
+    )
+    assert prompt == "1girl, @style, sitting, cafe"
+    assert content == "1girl, sitting, cafe"
+    assert trigger == "@style"
+
+
+def test_middle_position_with_short_content():
+    prompt, content, _ = build_prompt(
+        "solo",
+        mode="style",
+        record_trigger="@style",
+        trigger_position="middle",
+    )
+    assert prompt == "solo, @style"
+
+def test_suffix_period_appends_dot():
+    prompt, content, trigger = build_prompt(
+        "1girl, solo, cafe",
+        mode="style",
+        record_trigger="@style",
+        trigger_position="suffix_period",
+    )
+    assert prompt == "1girl, solo, cafe, @style."
+    assert content == "1girl, solo, cafe"
+    assert trigger == "@style"

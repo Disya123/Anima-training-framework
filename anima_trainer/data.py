@@ -23,6 +23,7 @@ _MANIFEST_FIELDS = {
     "image",
     "caption",
     "trigger",
+    "trigger_position",
     "concept_type",
     "weight",
     "hard_tags",
@@ -104,12 +105,21 @@ def load_manifest(
                 raise ValueError(
                     f"{path}:{line_number}: concept_type={record_mode!r} does not match run mode={mode!r}"
                 )
+            record_position = (
+                trigger_position
+                if prior or not raw.get("trigger_position")
+                else str(raw["trigger_position"])
+            )
+            if record_position not in {"prefix", "suffix", "suffix_period", "middle"}:
+                raise ValueError(
+                    f"{path}:{line_number}: trigger_position must be prefix, suffix, suffix_period, or middle"
+                )
             prompt, content_prompt, trigger = build_prompt(
                 str(raw.get("caption", "")),
                 mode=record_mode,
                 record_trigger=None if prior else raw.get("trigger"),
                 global_trigger=None if prior else global_trigger,
-                trigger_position=trigger_position,
+                trigger_position=record_position,
             )
             raw_id = str(raw.get("id") or f"{image.stem}-{line_number:05d}")
             record_id = _safe_id(raw_id)
